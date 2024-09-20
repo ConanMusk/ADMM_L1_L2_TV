@@ -217,9 +217,9 @@ def TVLoss(x):
     count_w = x[:,:,1:,:].size()[2]*x[:,:,1:,:].size()[3]
     return 2 * (h_tv / count_h + w_tv / count_w)
 # L2正则化项的闭合解表达
-def update_z_l2(X, U, lam, rho):
+def update_z_l2(X, MU, lam, rho):
     # 根据解析解直接更新 z
-    Z = (rho * (X + U)) / (lam + rho)
+    Z = (rho * (X + MU /rho)) / (2*lam + rho)
     return Z
 # L1正则项的软阈值函数表达
 def soft_thresholding(X, threshold):
@@ -234,7 +234,7 @@ def admm_convolution_RGB(y, K, lam, rho, num_iters=300,option="L1"):
     y = torch.from_numpy(np.transpose(y,(2,0,1))).unsqueeze(0).to(device)
     X = torch.zeros_like(y).to(device)
     Z = torch.zeros_like(y).to(device)
-    U = torch.zeros_like(y).to(device)
+    MU = torch.zeros_like(y).to(device)
     if option=="TV":
     #--------使用梯度下降方法进行求解z
         Z = torch.zeros_like(y, requires_grad=True).to(device)
@@ -246,11 +246,12 @@ def admm_convolution_RGB(y, K, lam, rho, num_iters=300,option="L1"):
     K_fft = torch.fft.fft2(K, s=(y.shape)[2:4])
     K_fft_conj = torch.conj(K_fft)
     loss_values = []
+    Y_fft = torch.fft.fft2(y)
     for i in range(num_iters):
         # Step 1: X更新 (通过FFT求解带卷积的优化问题)
         # 关于变量x的频域闭合解实现
-        Y_fft = torch.fft.fft2(y)
-        numerator = K_fft_conj * Y_fft + rho * torch.fft.fft2(Z - U)
+        B = Z-MU / rho
+        numerator = K_fft_conj * Y_fft + rho * torch.fft.fft2(B)
         denominator = K_fft_conj * K_fft + rho
         X_fft = numerator / denominator
         X = torch.real(torch.fft.ifft2(X_fft))
@@ -259,7 +260,7 @@ def admm_convolution_RGB(y, K, lam, rho, num_iters=300,option="L1"):
         if option=="TV":
             optimizer.zero_grad()  # 清除之前的梯度
             tv_loss = lam * TVLoss(Z)  # TV正则化项
-            fidelity_loss = (rho / 2) * torch.norm(X - Z + U) ** 2  # 保真项
+            fidelity_loss = (rho / 2) * torch.norm(X - Z + MU / rho) ** 2  # 保真项
             loss = fidelity_loss + tv_loss  # 总的损失函数
             # print(loss.item())
             loss.backward(retain_graph=True)  # 反向传播计算梯度
@@ -269,11 +270,11 @@ def admm_convolution_RGB(y, K, lam, rho, num_iters=300,option="L1"):
             loss_values.append(loss.item())
         elif option=="L1":
         # 关于使用梯度下将方法的变量z更新
-            Z= soft_thresholding(X + U, lam / rho) #L1范数软阈值
+            Z= soft_thresholding(X + MU / rho, lam / rho) #L1范数软阈值
         else:
-            Z = update_z_l2(X, U, lam, rho) # L2正则项
+            Z = update_z_l2(X, MU, lam, rho) # L2正则项
         # Step 3: U更新 (拉格朗日乘子更新)
-        U = U + (X - Z)
+        MU = MU + rho * (X - Z)
     if option=="TV":
         plt.plot(loss_values)
         plt.title('Loss Curve')
@@ -282,13 +283,14 @@ def admm_convolution_RGB(y, K, lam, rho, num_iters=300,option="L1"):
         plt.show()
     return X.detach().cpu().numpy()
 
+
 # 参数设置
 lam = 0.01  # 正则化参数
 rho = 1.0  # ADMM中的惩罚参数
-num_iters = 1000  # 迭代次数
+num_iters = 100  # 迭代次数
 kernel2=kernel.detach().cpu().numpy().squeeze()
 # 调用ADMM算法
-X_rec = admm_convolution_RGB(RGB_blur, kernel2, lam, rho, num_iters,option="L1")
+X_rec = admm_convolution_RGB(RGB_blur, kernel2, lam, rho, num_iters,option="TV")
 X_rec = np.transpose(X_rec.squeeze(),(1,2,0))
 plt.imshow(X_rec)
 plt.axis('off')  # 关闭坐标轴
